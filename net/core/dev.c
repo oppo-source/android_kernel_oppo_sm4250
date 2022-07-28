@@ -143,6 +143,10 @@
 #include <linux/hrtimer.h>
 #include <linux/netfilter_ingress.h>
 #include <linux/crash_dump.h>
+#ifdef OPLUS_FEATURE_WIFI_LIMMITBGSPEED
+#include <linux/imq.h>
+#endif /* OPLUS_FEATURE_WIFI_LIMMITBGSPEED */
+
 #include <linux/sctp.h>
 #include <net/udp_tunnel.h>
 #include <linux/net_namespace.h>
@@ -3250,7 +3254,12 @@ static int xmit_one(struct sk_buff *skb, struct net_device *dev,
 	unsigned int len;
 	int rc;
 
+	#ifdef OPLUS_FEATURE_WIFI_LIMMITBGSPEED
+	if ((!list_empty(&ptype_all) || !list_empty(&dev->ptype_all)) &&
+		!(skb->imq_flags & IMQ_F_ENQUEUE))
+	#else /* OPLUS_FEATURE_WIFI_LIMMITBGSPEED */
 	if (!list_empty(&ptype_all) || !list_empty(&dev->ptype_all))
+	#endif /* OPLUS_FEATURE_WIFI_LIMMITBGSPEED */
 		dev_queue_xmit_nit(skb, dev);
 
 	len = skb->len;
@@ -3288,6 +3297,10 @@ out:
 	*ret = rc;
 	return skb;
 }
+#ifdef OPLUS_FEATURE_WIFI_LIMMITBGSPEED
+EXPORT_SYMBOL_GPL(dev_hard_start_xmit);
+#endif /* OPLUS_FEATURE_WIFI_LIMMITBGSPEED */
+
 
 static struct sk_buff *validate_xmit_vlan(struct sk_buff *skb,
 					  netdev_features_t features)
@@ -3449,8 +3462,13 @@ static inline int __dev_xmit_skb(struct sk_buff *skb, struct Qdisc *q,
 	qdisc_calculate_pkt_len(skb, q);
 
 	if (q->flags & TCQ_F_NOLOCK) {
-		rc = q->enqueue(skb, q, &to_free) & NET_XMIT_MASK;
-		qdisc_run(q);
+		if (unlikely(test_bit(__QDISC_STATE_DEACTIVATED, &q->state))) {
+			__qdisc_drop(skb, &to_free);
+			rc = NET_XMIT_DROP;
+		} else {
+			rc = q->enqueue(skb, q, &to_free) & NET_XMIT_MASK;
+			qdisc_run(q);
+		}
 
 		if (unlikely(to_free))
 			kfree_skb_list(to_free);

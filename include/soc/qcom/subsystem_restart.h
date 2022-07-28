@@ -146,6 +146,11 @@ struct notif_data {
 
 extern int subsys_get_restart_level(struct subsys_device *dev);
 extern int subsystem_restart_dev(struct subsys_device *dev);
+#ifdef OPLUS_FEATURE_MODEM_MINIDUMP
+#define MAX_REASON_LEN 300
+extern void __subsystem_send_uevent(struct device *dev, char *reason);
+extern void subsystem_send_uevent(struct subsys_device *dev, char *reason);
+#endif /*OPLUS_FEATURE_MODEM_MINIDUMP*/
 extern int subsystem_restart(const char *name);
 extern int subsystem_crashed(const char *name);
 
@@ -179,6 +184,17 @@ static inline int subsystem_restart_dev(struct subsys_device *dev)
 {
 	return 0;
 }
+
+#ifdef OPLUS_FEATURE_MODEM_MINIDUMP
+static inline void __subsystem_send_uevent(struct device *dev, char *reason)
+{
+	return;
+}
+static inline void subsystem_send_uevent(struct subsys_device *dev, char *reason)
+{
+	return;
+}
+#endif /*OPLUS_FEATURE_MODEM_MINIDUMP*/
 
 static inline int subsystem_restart(const char *name)
 {

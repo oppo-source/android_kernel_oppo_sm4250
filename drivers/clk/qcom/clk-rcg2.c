@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2013, 2018-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013, 2018-2020, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/kernel.h>
@@ -481,12 +481,28 @@ static bool clk_rcg2_current_config(struct clk_rcg2 *rcg,
 	if (rcg->mnd_width) {
 		mask = BIT(rcg->mnd_width) - 1;
 		regmap_read(rcg->clkr.regmap, rcg->cmd_rcgr + M_REG, &cfg);
+#ifdef OPLUS_BUG_STABILITY
+/* sunshiyue, 2020/05/12, add for fixing flashing */
+		if (!cfg && (f->m == f->n))
+			return true;
+		else if ((cfg & mask) != (f->m & mask))
+			return false;
+#else
 		if ((cfg & mask) != (f->m & mask))
 			return false;
+#endif
 
 		regmap_read(rcg->clkr.regmap, rcg->cmd_rcgr + N_REG, &cfg);
+#ifdef OPLUS_BUG_STABILITY
+/* sunshiyue, 2020/05/12, add for fixing flashing */
+		if (!cfg && (f->m == f->n))
+			return true;
+		else if ((cfg & mask) != (~(f->n - f->m) & mask))
+			return false;
+#else
 		if ((cfg & mask) != (~(f->n - f->m) & mask))
 			return false;
+#endif
 	}
 
 	mask = (BIT(rcg->hid_width) - 1) | CFG_SRC_SEL_MASK;
@@ -1165,8 +1181,17 @@ static int clk_pixel_set_rate(struct clk_hw *hw, unsigned long rate,
 		f.m = frac->num;
 		f.n = frac->den;
 
+#ifdef OPLUS_BUG_STABILITY
+/* sunshiyue, 2020/05/12, add for fixing flashing */
+		if (clk_rcg2_current_config(rcg, &f)) {
+			pr_err("clk_rcg2_current_config check\n");
+			return 0;
+		}
+		pr_err("clk_rcg2_configure called\n");
+#else
 		if (clk_rcg2_current_config(rcg, &f))
 			return 0;
+#endif
 		return clk_rcg2_configure(rcg, &f);
 	}
 	return -EINVAL;
@@ -1395,19 +1420,7 @@ static int clk_gfx3d_src_set_rate_and_parent(struct clk_hw *hw,
 	if (ret)
 		return ret;
 
-	if ((!clk_rcg2_is_force_enabled(hw) && (!clk_hw_is_prepared(hw)
-		|| !clk_hw_is_enabled(hw))))
-		clk_rcg2_set_force_enable(hw);
-
-	ret = update_config(rcg, old_cfg);
-	if (ret)
-		return ret;
-
-	if ((clk_rcg2_is_force_enabled(hw) && (!clk_hw_is_prepared(hw)
-		|| !clk_hw_is_enabled(hw))))
-		clk_rcg2_clear_force_enable(hw);
-
-	return ret;
+	return update_config(rcg, old_cfg);
 }
 
 static int clk_gfx3d_src_determine_rate(struct clk_hw *hw,

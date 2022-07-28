@@ -45,6 +45,10 @@
 
 #include <trace/events/tcp.h>
 
+//#ifdef OPLUS_FEATURE_NWPOWER
+#include <net/oplus_nwpower.h>
+//#endif /* OPLUS_FEATURE_NWPOWER */
+
 static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 			   int push_one, gfp_t gfp);
 
@@ -1146,6 +1150,10 @@ static int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
 			       sizeof(struct inet6_skb_parm)));
 
 	err = icsk->icsk_af_ops->queue_xmit(sk, skb, &inet->cork.fl);
+
+	//#ifdef OPLUS_FEATURE_NWPOWER
+	oplus_match_tcp_output(sk);
+	//#endif /* OPLUS_FEATURE_NWPOWER */
 
 	if (unlikely(err > 0)) {
 		tcp_enter_cwr(sk);
@@ -2957,11 +2965,12 @@ int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb, int segs)
 #endif
 		TCP_SKB_CB(skb)->sacked |= TCPCB_RETRANS;
 		tp->retrans_out += tcp_skb_pcount(skb);
-	}
 
-	/* Save stamp of the first (attempted) retransmit. */
-	if (!tp->retrans_stamp)
-		tp->retrans_stamp = tcp_skb_timestamp(skb);
+		/* Save stamp of the first retransmit. */
+		if (!tp->retrans_stamp)
+			tp->retrans_stamp = tcp_skb_timestamp(skb);
+
+	}
 
 	if (tp->undo_retrans < 0)
 		tp->undo_retrans = 0;

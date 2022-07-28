@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2009-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2009-2020, The Linux Foundation. All rights reserved.
  */
 
 #define pr_fmt(fmt) "%s: " fmt, __func__
@@ -21,7 +21,10 @@
 #include <soc/qcom/socinfo.h>
 #include <linux/soc/qcom/smem.h>
 #include <soc/qcom/boot_stats.h>
-
+#ifdef OPLUS_ARCH_EXTENDS
+/*BSP.Kernel.Driver, 2020/05/09, Add for fake cpu id*/
+#include <soc/oplus/system/oppo_project.h>
+#endif /* VENDOR_EDIT */
 #define BUILD_ID_LENGTH 32
 #define CHIP_ID_LENGTH 32
 #define SMEM_IMAGE_VERSION_BLOCKS_COUNT 32
@@ -229,6 +232,13 @@ static union {
 /* max socinfo format version supported */
 #define MAX_SOCINFO_FORMAT SOCINFO_VERSION(0, 15)
 
+#ifdef OPLUS_ARCH_EXTENDS
+/*BSP.Kernel.Driver, 2020/05/09, Add for fake cpu id*/
+static char *fake_cpu_id = "SM6150";
+static char *sm4250_real_cpu_id = "SM4250";
+static char *sm6115_real_cpu_id = "SM6115";
+#endif
+
 static struct msm_soc_info cpu_of_id[] = {
 	[0]  = {MSM_CPU_UNKNOWN, "Unknown CPU"},
 	/* 8960 IDs */
@@ -322,7 +332,6 @@ static struct msm_soc_info cpu_of_id[] = {
 	/* kona ID */
 	[356] = {MSM_CPU_KONA, "KONA"},
 	[455] = {MSM_CPU_KONA, "KONA"},
-	[496] = {MSM_CPU_KONA, "KONA"},
 
 	/* Lito ID */
 	[400] = {MSM_CPU_LITO, "LITO"},
@@ -334,9 +343,6 @@ static struct msm_soc_info cpu_of_id[] = {
 	/* Bengal ID */
 	[417] = {MSM_CPU_BENGAL, "BENGAL"},
 	[444] = {MSM_CPU_BENGAL, "BENGAL"},
-
-	/* Khaje ID */
-	[518] = {MSM_CPU_KHAJE, "KHAJE"},
 
 	/* Lagoon ID */
 	[434] = {MSM_CPU_LAGOON, "LAGOON"},
@@ -359,31 +365,6 @@ static struct msm_soc_info cpu_of_id[] = {
 
 	/* BENGALP-IOT ID */
 	[470] = {MSM_CPU_BENGALP_IOT, "BENGALP-IOT"},
-
-	/* MSM8937 ID */
-	[294] = {MSM_CPU_8937, "MSM8937"},
-	[295] = {MSM_CPU_8937, "APQ8937"},
-
-	/* MSM8917 IDs */
-	[303] = {MSM_CPU_8917, "MSM8917"},
-	[307] = {MSM_CPU_8917, "APQ8017"},
-	[308] = {MSM_CPU_8917, "MSM8217"},
-	[309] = {MSM_CPU_8917, "MSM8617"},
-
-	/* SDM429 and SDM439 ID */
-	[353] = {MSM_CPU_SDM439, "SDM439"},
-	[354] = {MSM_CPU_SDM429, "SDM429"},
-
-
-	/* QM215 ID */
-	[386] = {MSM_CPU_QM215, "QM215"},
-
-	/* 8953 ID */
-	[293] = {MSM_CPU_8953, "MSM8953"},
-	[304] = {MSM_CPU_8953, "APQ8053"},
-
-	/* SDM450 ID */
-	[338] = {MSM_CPU_SDM450, "SDM450"},
 
 	/* Uninitialized IDs are not known to run Linux.
 	 * MSM_CPU_UNKNOWN is set to 0 to ensure these IDs are
@@ -1264,10 +1245,6 @@ static void * __init setup_dummy_socinfo(void)
 		dummy_socinfo.id = 417;
 		strlcpy(dummy_socinfo.build_id, "bengal - ",
 		sizeof(dummy_socinfo.build_id));
-	} else if (early_machine_is_khaje()) {
-		dummy_socinfo.id = 518;
-		strlcpy(dummy_socinfo.build_id, "khaje - ",
-		sizeof(dummy_socinfo.build_id));
 	} else if (early_machine_is_bengalp()) {
 		dummy_socinfo.id = 445;
 		strlcpy(dummy_socinfo.build_id, "bengalp - ",
@@ -1316,34 +1293,6 @@ static void * __init setup_dummy_socinfo(void)
 		dummy_socinfo.id = 470;
 		strlcpy(dummy_socinfo.build_id, "bengalp-iot - ",
 		sizeof(dummy_socinfo.build_id));
-	} else if (early_machine_is_msm8937()) {
-		dummy_socinfo.id = 294;
-		strlcpy(dummy_socinfo.build_id, "msm8937 - ",
-		sizeof(dummy_socinfo.build_id));
-	} else if (early_machine_is_msm8917()) {
-		dummy_socinfo.id = 303;
-		strlcpy(dummy_socinfo.build_id, "msm8917 - ",
-			sizeof(dummy_socinfo.build_id));
-	} else if (early_machine_is_sdm439()) {
-		dummy_socinfo.id = 353;
-		strlcpy(dummy_socinfo.build_id, "sdm439 - ",
-				sizeof(dummy_socinfo.build_id));
-	} else if (early_machine_is_sdm429()) {
-		dummy_socinfo.id = 354;
-		strlcpy(dummy_socinfo.build_id, "sdm429 - ",
-				sizeof(dummy_socinfo.build_id));
-	} else if (early_machine_is_qm215()) {
-		dummy_socinfo.id = 386;
-		strlcpy(dummy_socinfo.build_id, "qm215 - ",
-				sizeof(dummy_socinfo.build_id));
-	} else if (early_machine_is_msm8953()) {
-		dummy_socinfo.id = 293;
-		strlcpy(dummy_socinfo.build_id, "msm8953 - ",
-			sizeof(dummy_socinfo.build_id));
-	} else if (early_machine_is_sdm450()) {
-		dummy_socinfo.id = 338;
-		strlcpy(dummy_socinfo.build_id, "sdm450 - ",
-			sizeof(dummy_socinfo.build_id));
 	} else
 		strlcat(dummy_socinfo.build_id, "Dummy socinfo",
 			sizeof(dummy_socinfo.build_id));
@@ -1707,6 +1656,14 @@ int __init socinfo_init(void)
 		pr_warn("New IDs added! ID => CPU mapping needs an update.\n");
 
 	cur_cpu = cpu_of_id[socinfo->v0_1.id].generic_soc_type;
+#ifdef OPLUS_ARCH_EXTENDS
+	if (is_confidential()) {
+		cpu_of_id[socinfo->v0_1.id].soc_id_string = fake_cpu_id;
+	} else {
+		cpu_of_id[417].soc_id_string = sm4250_real_cpu_id;
+		cpu_of_id[444].soc_id_string = sm6115_real_cpu_id;
+    }
+#endif
 	boot_stats_init();
 	socinfo_print();
 	arch_read_hardware_id = msm_read_hardware_id;

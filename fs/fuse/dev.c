@@ -22,6 +22,7 @@
 #include <linux/swap.h>
 #include <linux/splice.h>
 #include <linux/sched.h>
+#include <../../kernel/sched/sched.h>
 
 MODULE_ALIAS_MISCDEV(FUSE_MINOR);
 MODULE_ALIAS("devname:fuse");
@@ -327,16 +328,17 @@ static u64 fuse_get_unique(struct fuse_iqueue *fiq)
 	return ++fiq->reqctr;
 }
 
-static void queue_request(struct fuse_iqueue *fiq, struct fuse_req *req,
-				bool sync)
+static void queue_request(struct fuse_iqueue *fiq, struct fuse_req *req)
 {
+	int cpu = task_cpu(current);
+	struct rq *rq = cpu_rq(cpu);
 	req->in.h.len = sizeof(struct fuse_in_header) +
 		len_args(req->in.numargs, (struct fuse_arg *) req->in.args);
 	list_add_tail(&req->list, &fiq->pending);
-	if (sync)
-		wake_up_sync(&fiq->waitq);
-	else
+	if (test_bit(FR_BACKGROUND, &req->flags) || rq->nr_running > 1)
 		wake_up(&fiq->waitq);
+	else
+		wake_up_sync(&fiq->waitq);
 	kill_fasync(&fiq->fasync, SIGIO, POLL_IN);
 }
 
@@ -372,7 +374,7 @@ static void flush_bg_queue(struct fuse_conn *fc)
 		fc->active_background++;
 		spin_lock(&fiq->lock);
 		req->in.h.unique = fuse_get_unique(fiq);
-		queue_request(fiq, req, 0);
+		queue_request(fiq, req);
 		spin_unlock(&fiq->lock);
 	}
 }
@@ -501,7 +503,7 @@ static void __fuse_request_send(struct fuse_conn *fc, struct fuse_req *req)
 		req->out.h.error = -ENOTCONN;
 	} else {
 		req->in.h.unique = fuse_get_unique(fiq);
-		queue_request(fiq, req, 1);
+		queue_request(fiq, req);
 		/* acquire extra reference, since request is still needed
 		   after request_end() */
 		__fuse_get_request(req);
@@ -641,7 +643,7 @@ static int fuse_request_send_notify_reply(struct fuse_conn *fc,
 	req->in.h.unique = unique;
 	spin_lock(&fiq->lock);
 	if (fiq->connected) {
-		queue_request(fiq, req, 0);
+		queue_request(fiq, req);
 		err = 0;
 	}
 	spin_unlock(&fiq->lock);
@@ -1328,6 +1330,9 @@ static ssize_t fuse_dev_do_read(struct fuse_dev *fud, struct file *file,
 	clear_bit(FR_LOCKED, &req->flags);
 	if (!fpq->connected) {
 		err = (fc->aborted && fc->abort_err) ? -ECONNABORTED : -ENODEV;
+		/* Assign abnormal value to req->error when fpq disconnected */
+		if (req->in.h.opcode == FUSE_CANONICAL_PATH)
+			req->out.h.error = -ECONNABORTED;
 		goto out_end;
 	}
 	if (err) {
@@ -1872,6 +1877,7 @@ static ssize_t fuse_dev_do_write(struct fuse_dev *fud,
 	struct fuse_req *req;
 	struct fuse_out_header oh;
 
+
 	if (nbytes < sizeof(struct fuse_out_header))
 		return -EINVAL;
 
@@ -1937,7 +1943,6 @@ static ssize_t fuse_dev_do_write(struct fuse_dev *fud,
 
 	err = copy_out_args(cs, &req->out, nbytes);
 	fuse_copy_finish(cs);
-
 	if (!err && req->in.h.opcode == FUSE_CANONICAL_PATH) {
 		char *path = (char *)req->out.args[0].value;
 
@@ -1947,8 +1952,12 @@ static ssize_t fuse_dev_do_write(struct fuse_dev *fud,
 
 	spin_lock(&fpq->lock);
 	clear_bit(FR_LOCKED, &req->flags);
-	if (!fpq->connected)
+	if (!fpq->connected) {
+		/* Assign abnormal value to req->error when fpq disconnected */
+		if (req->in.h.opcode == FUSE_CANONICAL_PATH)
+			req->out.h.error = -ECONNABORTED;
 		err = -ENOENT;
+	}
 	else if (err)
 		req->out.h.error = -EIO;
 	if (!test_bit(FR_PRIVATE, &req->flags))
@@ -2260,37 +2269,50 @@ static int fuse_device_clone(struct fuse_conn *fc, struct file *new)
 static long fuse_dev_ioctl(struct file *file, unsigned int cmd,
 			   unsigned long arg)
 {
-	int err = -ENOTTY;
+	int res;
+	int oldfd;
+	struct fuse_dev *fud = NULL;
 
-	if (cmd == FUSE_DEV_IOC_CLONE) {
-		int oldfd;
-
-		err = -EFAULT;
-		if (!get_user(oldfd, (__u32 __user *) arg)) {
+	switch (cmd) {
+	case FUSE_DEV_IOC_CLONE:
+		res = -EFAULT;
+		if (!get_user(oldfd, (__u32 __user *)arg)) {
 			struct file *old = fget(oldfd);
 
-			err = -EINVAL;
+			res = -EINVAL;
 			if (old) {
-				struct fuse_dev *fud = NULL;
-
 				/*
 				 * Check against file->f_op because CUSE
 				 * uses the same ioctl handler.
 				 */
 				if (old->f_op == file->f_op &&
-				    old->f_cred->user_ns == file->f_cred->user_ns)
+				    old->f_cred->user_ns ==
+					    file->f_cred->user_ns)
 					fud = fuse_get_dev(old);
 
 				if (fud) {
 					mutex_lock(&fuse_mutex);
-					err = fuse_device_clone(fud->fc, file);
+					res = fuse_device_clone(fud->fc, file);
 					mutex_unlock(&fuse_mutex);
 				}
 				fput(old);
 			}
 		}
+		break;
+	case FUSE_DEV_IOC_PASSTHROUGH_OPEN:
+		res = -EFAULT;
+		if (!get_user(oldfd, (__u32 __user *)arg)) {
+			res = -EINVAL;
+			fud = fuse_get_dev(file);
+			if (fud)
+				res = fuse_passthrough_open(fud, oldfd);
+		}
+		break;
+	default:
+		res = -ENOTTY;
+		break;
 	}
-	return err;
+	return res;
 }
 
 const struct file_operations fuse_dev_operations = {

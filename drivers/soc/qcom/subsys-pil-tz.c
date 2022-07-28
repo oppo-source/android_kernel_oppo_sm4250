@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2014-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2020, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/kernel.h>
@@ -25,6 +25,10 @@
 #include <linux/soc/qcom/smem.h>
 #include <linux/soc/qcom/smem_state.h>
 
+#ifdef OPLUS_FEATURE_MM_FEEDBACK
+#include <soc/oplus/system/oplus_mm_kevent_fb.h>
+#endif
+
 #include "peripheral-loader.h"
 
 #define XO_FREQ			19200000
@@ -38,13 +42,6 @@
 
 #define desc_to_data(d) container_of(d, struct pil_tz_data, desc)
 #define subsys_to_data(d) container_of(d, struct pil_tz_data, subsys_desc)
-
-struct pil_map_fw_info {
-	void *region;
-	unsigned long attrs;
-	phys_addr_t base_addr;
-	struct device *dev;
-};
 
 /**
  * struct reg_info - regulator info
@@ -606,21 +603,16 @@ static void pil_remove_proxy_vote(struct pil_desc *pil)
 }
 
 static int pil_init_image_trusted(struct pil_desc *pil,
-		const u8 *metadata, size_t size, phys_addr_t mdata_phys,
-		void *region)
+		const u8 *metadata, size_t size)
 {
 	struct pil_tz_data *d = desc_to_data(pil);
 	u32 scm_ret = 0;
 	void *mdata_buf;
+	dma_addr_t mdata_phys;
 	int ret;
+	unsigned long attrs = 0;
+	struct device dev = {0};
 	struct scm_desc desc = {0};
-	struct pil_map_fw_info map_fw_info = {
-		.attrs = pil->attrs,
-		.region = region,
-		.base_addr = mdata_phys,
-		.dev = pil->dev,
-	};
-	void *map_data = pil->map_data ? pil->map_data : &map_fw_info;
 
 	if (d->subsys_desc.no_auth)
 		return 0;
@@ -628,10 +620,15 @@ static int pil_init_image_trusted(struct pil_desc *pil,
 	ret = scm_pas_enable_bw();
 	if (ret)
 		return ret;
+	arch_setup_dma_ops(&dev, 0, 0, NULL, 0);
 
-	mdata_buf = pil->map_fw_mem(mdata_phys, size, map_data);
+	dev.coherent_dma_mask =
+		DMA_BIT_MASK(sizeof(dma_addr_t) * 8);
+	attrs |= DMA_ATTR_STRONGLY_ORDERED;
+	mdata_buf = dma_alloc_attrs(&dev, size, &mdata_phys, GFP_KERNEL,
+					attrs);
 	if (!mdata_buf) {
-		dev_err(pil->dev, "Failed to map memory for metadata.\n");
+		pr_err("scm-pas: Allocation for metadata failed.\n");
 		scm_pas_disable_bw();
 		return -ENOMEM;
 	}
@@ -645,7 +642,7 @@ static int pil_init_image_trusted(struct pil_desc *pil,
 			&desc);
 	scm_ret = desc.ret[0];
 
-	pil->unmap_fw_mem(mdata_buf, size, map_data);
+	dma_free_attrs(&dev, size, mdata_buf, mdata_phys, attrs);
 	scm_pas_disable_bw();
 	if (ret)
 		return ret;
@@ -802,6 +799,11 @@ static struct pil_reset_ops pil_ops_trusted = {
 	.deinit_image = pil_deinit_image_trusted,
 };
 
+#ifdef OPLUS_FEATURE_MODEM_MINIDUMP
+//Add for customized subsystem ramdump to skip generate dump cause by SAU
+bool SKIP_GENERATE_RAMDUMP = false;
+extern void mdmreason_set(char * buf);
+#endif
 static void log_failure_reason(const struct pil_tz_data *d)
 {
 	size_t size;
@@ -819,11 +821,39 @@ static void log_failure_reason(const struct pil_tz_data *d)
 	}
 	if (!smem_reason[0]) {
 		pr_err("%s SFR: (unknown, empty string found).\n", name);
+		#ifdef OPLUS_FEATURE_MODEM_MINIDUMP
+		subsystem_send_uevent(d->subsys, 0);
+		#endif /*OPLUS_FEATURE_MODEM_MINIDUMP*/
 		return;
 	}
 
 	strlcpy(reason, smem_reason, min(size, (size_t)MAX_SSR_REASON_LEN));
 	pr_err("%s subsystem failure reason: %s.\n", name, reason);
+
+	#ifdef OPLUS_FEATURE_MM_FEEDBACK
+	if (strncmp(name, "adsp", strlen("adsp")) == 0) {
+		mm_fb_audio_kevent_named(OPLUS_AUDIO_EVENTID_ADSP_CRASH, \
+				MM_FB_KEY_RATELIMIT_5MIN, "FieldData@@%s$$detailData@@audio$$module@@adsp", reason);
+	}
+	#endif
+
+    #ifdef OPLUS_FEATURE_MODEM_MINIDUMP
+    //Add for customized subsystem ramdump to skip generate dump cause by SAU
+    if (!strncmp(name, "modem", 4)) {
+        mdmreason_set(reason);
+
+        pr_err("oppo debug modem subsystem failure reason: %s.\n", reason);
+
+        if(strstr(reason, "OPPO_MODEM_NO_RAMDUMP_EXPECTED") || strstr(reason, "oppomsg:go_to_error_fatal")){
+            pr_err("%s will subsys reset",__func__);
+            SKIP_GENERATE_RAMDUMP = true;
+        }
+    }
+    #endif
+
+	#ifdef OPLUS_FEATURE_MODEM_MINIDUMP
+	subsystem_send_uevent(d->subsys, reason);
+	#endif /*OPLUS_FEATURE_MODEM_MINIDUMP*/
 }
 
 static int subsys_shutdown(const struct subsys_desc *subsys, bool force_stop)

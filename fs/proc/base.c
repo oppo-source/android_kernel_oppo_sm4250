@@ -101,6 +101,21 @@
 
 #include "../../lib/kstrtox.h"
 
+#ifdef OPLUS_FEATURE_HEALTHINFO
+#ifdef CONFIG_OPPO_JANK_INFO
+#include <linux/healthinfo/jank_monitor.h>
+#endif
+#endif /* OPLUS_FEATURE_HEALTHINFO */
+#ifdef CONFIG_OPLUS_FEATURE_IM
+#include <linux/im/im.h>
+#endif
+#ifdef OPLUS_FEATURE_SCHED_ASSIST
+#define GLOBAL_SYSTEM_UID KUIDT_INIT(1000)
+#define GLOBAL_SYSTEM_GID KGIDT_INIT(1000)
+extern const struct file_operations proc_ux_state_operations;
+extern bool is_special_entry(struct dentry *dentry, const char* special_proc);
+#endif /* OPLUS_FEATURE_SCHED_ASSIST */
+
 /* NOTE:
  *	Implementing inode permission operations in /proc is almost
  *	certainly an error.  Permission checks need to happen during
@@ -2088,6 +2103,13 @@ static int pid_revalidate(struct dentry *dentry, unsigned int flags)
 
 	if (task) {
 		pid_update_inode(task, inode);
+#ifdef OPLUS_FEATURE_SCHED_ASSIST
+		if (is_special_entry(dentry, "ux_state")) {
+			inode->i_uid = GLOBAL_SYSTEM_UID;
+			inode->i_gid = GLOBAL_SYSTEM_GID;
+		}
+#endif /* OPLUS_FEATURE_SCHED_ASSIST */
+
 		put_task_struct(task);
 		return 1;
 	}
@@ -3349,11 +3371,30 @@ static int proc_pid_patch_state(struct seq_file *m, struct pid_namespace *ns,
 }
 #endif /* CONFIG_LIVEPATCH */
 
+#ifdef CONFIG_OPLUS_FEATURE_IM
+static int proc_im_flag(struct seq_file *m, struct pid_namespace *ns,
+	struct pid *pid, struct task_struct *task)
+{
+#define IM_TAG_DESC_LEN (128)
+	char desc[IM_TAG_DESC_LEN] = {0};
+
+	im_to_str(task->im_flag, desc, IM_TAG_DESC_LEN);
+	desc[IM_TAG_DESC_LEN - 1] = '\0';
+	seq_printf(m, "%d %s\n", task->im_flag, desc);
+	return 0;
+}
+
+#endif /* CONFIG_OPLUS_FEATURE_IM */
+
 /*
  * Thread groups
  */
 static const struct file_operations proc_task_operations;
 static const struct inode_operations proc_task_inode_operations;
+
+#if defined(OPLUS_FEATURE_VIRTUAL_RESERVE_MEMORY) && defined(CONFIG_VIRTUAL_RESERVE_MEMORY)
+#include "va_feature_node.h"
+#endif
 
 static const struct pid_entry tgid_base_stuff[] = {
 	DIR("task",       S_IRUGO|S_IXUGO, proc_task_inode_operations, proc_task_operations),
@@ -3392,6 +3433,9 @@ static const struct pid_entry tgid_base_stuff[] = {
 	REG("cmdline",    S_IRUGO, proc_pid_cmdline_ops),
 	ONE("stat",       S_IRUGO, proc_tgid_stat),
 	ONE("statm",      S_IRUGO, proc_pid_statm),
+#ifdef OPLUS_FEATURE_PERFORMANCE
+	ONE("statm_as",   S_IRUGO, proc_pid_statm_as),
+#endif /* OPLUS_FEATURE_PERFORMANCE */
 	REG("maps",       S_IRUGO, proc_pid_maps_operations),
 #ifdef CONFIG_NUMA
 	REG("numa_maps",  S_IRUGO, proc_pid_numa_maps_operations),
@@ -3469,6 +3513,17 @@ static const struct pid_entry tgid_base_stuff[] = {
 #endif
 #ifdef CONFIG_CPU_FREQ_TIMES
 	ONE("time_in_state", 0444, proc_time_in_state_show),
+#endif
+#if defined(OPLUS_FEATURE_VIRTUAL_RESERVE_MEMORY) && defined(CONFIG_VIRTUAL_RESERVE_MEMORY)
+	REG("va_feature", 0666, proc_va_feature_operations),
+#endif
+#ifdef OPLUS_FEATURE_HEALTHINFO
+#ifdef CONFIG_OPPO_JANK_INFO
+	REG("jank_info", S_IRUGO | S_IWUGO, proc_jank_trace_operations),
+#endif
+#endif /* OPLUS_FEATURE_HEALTHINFO */
+#ifdef CONFIG_OPLUS_FEATURE_IM
+	ONE("im_flag", 0444, proc_im_flag),
 #endif
 };
 
@@ -3794,6 +3849,9 @@ static const struct pid_entry tid_base_stuff[] = {
 	REG("cmdline",   S_IRUGO, proc_pid_cmdline_ops),
 	ONE("stat",      S_IRUGO, proc_tid_stat),
 	ONE("statm",     S_IRUGO, proc_pid_statm),
+#ifdef OPLUS_FEATURE_PERFORMANCE
+	ONE("statm_as",   S_IRUGO, proc_pid_statm_as),
+#endif /* OPLUS_FEATURE_PERFORMANCE */
 	REG("maps",      S_IRUGO, proc_pid_maps_operations),
 #ifdef CONFIG_PROC_CHILDREN
 	REG("children",  S_IRUGO, proc_tid_children_operations),
@@ -3863,6 +3921,12 @@ static const struct pid_entry tid_base_stuff[] = {
 #endif
 #ifdef CONFIG_CPU_FREQ_TIMES
 	ONE("time_in_state", 0444, proc_time_in_state_show),
+#endif
+#ifdef OPLUS_FEATURE_SCHED_ASSIST
+	REG("ux_state", S_IRUGO | S_IWUGO, proc_ux_state_operations),
+#endif /* OPLUS_FEATURE_SCHED_ASSIST */
+#ifdef CONFIG_OPLUS_FEATURE_IM
+	ONE("im_flag", 0444, proc_im_flag),
 #endif
 };
 

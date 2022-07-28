@@ -468,7 +468,9 @@ endif   # if NET
 # Classic BPF JIT (cBPF)
 config HAVE_CBPF_JIT
 	bool
-
+source "net/oplus_connectivity_sla/Kconfig"
 # Extended BPF JIT (eBPF)
 config HAVE_EBPF_JIT
 	bool
+
+source "net/oplus_score/Kconfig"

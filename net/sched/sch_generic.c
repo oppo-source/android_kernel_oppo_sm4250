@@ -292,6 +292,16 @@ trace:
 	return skb;
 }
 
+#ifdef OPLUS_FEATURE_WIFI_LIMMITBGSPEED
+struct sk_buff *qdisc_dequeue_skb(struct Qdisc *q, bool *validate)
+{
+	int packets;
+
+	return dequeue_skb(q, validate, &packets);
+}
+EXPORT_SYMBOL(qdisc_dequeue_skb);
+#endif /* OPLUS_FEATURE_WIFI_LIMMITBGSPEED */
+
 /*
  * Transmit possibly several skbs, and handle the return status as
  * required. Owning running seqcount bit guarantees that
@@ -1121,8 +1131,7 @@ static void dev_deactivate_queue(struct net_device *dev,
 	if (qdisc) {
 		if (!(qdisc->flags & TCQ_F_BUILTIN))
 			set_bit(__QDISC_STATE_DEACTIVATED, &qdisc->state);
-
-		rcu_assign_pointer(dev_queue->qdisc, qdisc_default);
+			rcu_assign_pointer(dev_queue->qdisc, qdisc_default);
 	}
 }
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2011-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2020, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/compat.h>
@@ -210,9 +210,8 @@ static void kgsl_iommu_remove_global(struct kgsl_mmu *mmu,
 static void kgsl_iommu_add_global(struct kgsl_mmu *mmu,
 		struct kgsl_memdesc *memdesc, const char *name)
 {
-	u32 bit;
+	u32 bit, start = 0;
 	u64 size = kgsl_memdesc_footprint(memdesc);
-	int start = 0;
 
 	if (memdesc->gpuaddr != 0)
 		return;
@@ -1045,6 +1044,7 @@ static void setup_64bit_pagetable(struct kgsl_mmu *mmu,
 		pt->compat_va_end = KGSL_IOMMU_SECURE_BASE(mmu);
 		pt->va_start = KGSL_IOMMU_VA_BASE64;
 		pt->va_end = KGSL_IOMMU_VA_END64;
+
 	}
 
 	if (pagetable->name != KGSL_MMU_GLOBAL_PT &&
@@ -1148,7 +1148,7 @@ void _enable_gpuhtw_llc(struct kgsl_mmu *mmu, struct kgsl_iommu_pt *iommu_pt)
 	int ret;
 
 	/* GPU pagetable walk LLC slice not enabled */
-	if (IS_ERR_OR_NULL(adreno_dev->gpuhtw_llc_slice))
+	if (IS_ERR(adreno_dev->gpuhtw_llc_slice))
 		return;
 
 	/* Domain attribute to enable system cache for GPU pagetable walks */

@@ -25,6 +25,10 @@ obj-$(CONFIG_PACKET)		+= packet/
 obj-$(CONFIG_NET_KEY)		+= key/
 obj-$(CONFIG_BRIDGE)		+= bridge/
 obj-$(CONFIG_NET_DSA)		+= dsa/
+
+#ifdef OPLUS_FEATURE_DATA_EVAL
+obj-$(CONFIG_OPLUS_FEATURE_DATA_EVAL) += oplus_score/
+#endif /* OPLUS_FEATURE_DATA_EVAL */
 obj-$(CONFIG_ATALK)		+= appletalk/
 obj-$(CONFIG_X25)		+= x25/
 obj-$(CONFIG_LAPB)		+= lapb/
@@ -87,3 +91,18 @@ endif
 obj-$(CONFIG_QRTR)		+= qrtr/
 obj-$(CONFIG_NET_NCSI)		+= ncsi/
 obj-$(CONFIG_XDP_SOCKETS)	+= xdp/
+#ifdef OPLUS_FEATURE_WIFI_SLA
+obj-y                   	+= oplus_connectivity_sla/
+#endif /* OPLUS_FEATURE_WIFI_SLA */
+OPLUS_FEATURE_WIFI_LUCKYMONEY=1
+ifneq ($(OPLUS_FEATURE_WIFI_LUCKYMONEY),)
+obj-y				+= oplus_nf_hooks/
+endif #/* OPLUS_FEATURE_WIFI_LUCKYMONEY */
+OPLUS_FEATURE_DHCP=1
+ifneq ($(OPLUS_FEATURE_DHCP),)
+obj-y				+= oplus_dhcp/
+endif #/* OPLUS_FEATURE_DHCP */
+
+#ifdef OPLUS_FEATURE_NWPOWER
+obj-y				+= oplus_nwpower/
+#endif /* OPLUS_FEATURE_NWPOWER */

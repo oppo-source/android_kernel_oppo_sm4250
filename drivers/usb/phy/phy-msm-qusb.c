@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2014-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2020, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -505,25 +505,27 @@ static void qusb_phy_write_seq(void __iomem *base, u32 *seq, int cnt,
 	}
 }
 
-static void qusb_phy_reset(struct qusb_phy *qphy)
+#ifdef OPLUS_FEATURE_CHG_BASIC
+/* huangtongfeng add for test usb eye  */
+static void qusb_phy_read_seq(void __iomem *base, u32 *seq, int cnt,
+		unsigned long delay)
 {
-	int ret = 0;
+	int i;
 
-	ret = reset_control_assert(qphy->phy_reset);
-	if (ret)
-		dev_err(qphy->phy.dev, "%s: phy_reset assert failed\n",
-				__func__);
-	usleep_range(100, 150);
-	ret = reset_control_deassert(qphy->phy_reset);
-	if (ret)
-		dev_err(qphy->phy.dev, "%s: phy_reset deassert failed\n",
-				__func__);
+	pr_err("Seq count:%d\n", cnt);
+	for (i = 0; i < cnt; i = i+2) {
+		//readl_relaxed(base + seq[i+1]);
+		pr_err("read 0x%02x to 0x%02x\n", seq[i+1], readl_relaxed(base + seq[i+1]));
+		if (delay)
+			usleep_range(delay, (delay + 2000));
+	}
 }
+#endif
 
 static int qusb_phy_init(struct usb_phy *phy)
 {
 	struct qusb_phy *qphy = container_of(phy, struct qusb_phy, phy);
-	int reset_val = 0;
+	int ret, reset_val = 0;
 	u8 reg;
 	bool pll_lock_fail = false;
 
@@ -552,7 +554,13 @@ static int qusb_phy_init(struct usb_phy *phy)
 	}
 
 	/* Perform phy reset */
-	qusb_phy_reset(qphy);
+	ret = reset_control_assert(qphy->phy_reset);
+	if (ret)
+		dev_err(phy->dev, "%s: phy_reset assert failed\n", __func__);
+	usleep_range(100, 150);
+	ret = reset_control_deassert(qphy->phy_reset);
+	if (ret)
+		dev_err(phy->dev, "%s: phy_reset deassert failed\n", __func__);
 
 	/* Disable the PHY */
 	if (qphy->major_rev < 2)
@@ -669,7 +677,11 @@ static int qusb_phy_init(struct usb_phy *phy)
 
 	if (pll_lock_fail)
 		dev_err(phy->dev, "QUSB PHY PLL LOCK fails:%x\n", reg);
-
+#ifdef OPLUS_FEATURE_CHG_BASIC
+/* huangtongfeng add for test usb eye  */
+	qusb_phy_read_seq(qphy->base, qphy->qusb_phy_init_seq,
+				qphy->init_seq_len, 0);
+#endif
 	return 0;
 }
 
@@ -916,7 +928,15 @@ static int qusb_phy_drive_dp_pulse(struct usb_phy *phy,
 	}
 	qusb_phy_gdsc(qphy, true);
 	qusb_phy_enable_clocks(qphy, true);
-	qusb_phy_reset(qphy);
+
+	ret = reset_control_assert(qphy->phy_reset);
+	if (ret)
+		dev_err(qphy->phy.dev, "phyassert failed\n");
+	usleep_range(100, 150);
+	ret = reset_control_deassert(qphy->phy_reset);
+	if (ret)
+		dev_err(qphy->phy.dev, "deassert failed\n");
+
 	/* Configure PHY to enable control on DP/DM lines */
 	writel_relaxed(CLAMP_N_EN | FREEZIO_N | POWER_DOWN,
 				qphy->base + QUSB2PHY_PORT_POWERDOWN);
@@ -1003,7 +1023,13 @@ static int qusb_phy_dpdm_regulator_enable(struct regulator_dev *rdev)
 			qusb_phy_enable_clocks(qphy, true);
 
 			dev_dbg(qphy->phy.dev, "RESET QUSB PHY\n");
-			qusb_phy_reset(qphy);
+			ret = reset_control_assert(qphy->phy_reset);
+			if (ret)
+				dev_err(qphy->phy.dev, "phyassert failed\n");
+			usleep_range(100, 150);
+			ret = reset_control_deassert(qphy->phy_reset);
+			if (ret)
+				dev_err(qphy->phy.dev, "deassert failed\n");
 
 			/*
 			 * Phy in non-driving mode leaves Dp and Dm
@@ -1051,13 +1077,6 @@ static int qusb_phy_dpdm_regulator_disable(struct regulator_dev *rdev)
 		if (!qphy->cable_connected)
 			qusb_phy_clear_tcsr_clamp(qphy, false);
 
-		/*
-		 * Phy reset is needed in case multiple instances
-		 * of HSPHY exists with shared power supplies. This
-		 * reset is to bring out the PHY from high-Z state
-		 * and avoid extra current consumption.
-		 */
-		qusb_phy_reset(qphy);
 		ret = qusb_phy_enable_power(qphy, false);
 		if (ret < 0) {
 			dev_dbg(qphy->phy.dev,
@@ -1393,7 +1412,18 @@ static int qusb_phy_prepare_chg_det(struct qusb_phy *qphy)
 
 static void qusb_phy_unprepare_chg_det(struct qusb_phy *qphy)
 {
-	qusb_phy_reset(qphy);
+	int ret;
+
+	ret = reset_control_assert(qphy->phy_reset);
+	if (ret)
+		dev_err(qphy->phy.dev, "phyassert failed\n");
+
+	usleep_range(100, 150);
+
+	ret = reset_control_deassert(qphy->phy_reset);
+	if (ret)
+		dev_err(qphy->phy.dev, "deassert failed\n");
+
 	qusb_phy_enable_clocks(qphy, false);
 	qusb_phy_clear_tcsr_clamp(qphy, false);
 	qusb_phy_enable_power(qphy, false);

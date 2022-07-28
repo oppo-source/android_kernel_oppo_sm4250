@@ -302,6 +302,11 @@ EXPORT_SYMBOL(sysctl_tcp_delack_seg);
 int sysctl_tcp_use_userconfig __read_mostly;
 EXPORT_SYMBOL(sysctl_tcp_use_userconfig);
 
+#ifdef OPLUS_BUG_STABILITY
+int sysctl_tcp_ts_control[2] __read_mostly = {0,0};
+EXPORT_SYMBOL(sysctl_tcp_ts_control);
+#endif /* OPLUS_BUG_STABILITY */
+
 /*
  * Current number of TCP sockets.
  */
@@ -499,8 +504,6 @@ static inline bool tcp_stream_is_readable(const struct tcp_sock *tp,
 		if (avail >= target)
 			return true;
 		if (tcp_rmem_pressure(sk))
-			return true;
-		if (tcp_receive_window(tp) <= inet_csk(sk)->icsk_ack.rcv_mss)
 			return true;
 	}
 	if (sk->sk_prot->stream_memory_read)

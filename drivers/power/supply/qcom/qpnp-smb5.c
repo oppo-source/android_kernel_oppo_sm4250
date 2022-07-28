@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2018-2021 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2018-2020 The Linux Foundation. All rights reserved.
  */
 
 #include <linux/debugfs.h>
@@ -227,7 +227,7 @@ struct smb5 {
 	struct smb_dt_props	dt;
 };
 
-static int __debug_mask;
+static int __debug_mask = 0xff;
 
 static ssize_t pd_disabled_show(struct device *dev, struct device_attribute
 				*attr, char *buf)
@@ -463,9 +463,6 @@ static int smb5_parse_dt_misc(struct smb5 *chip, struct device_node *node)
 	chg->sw_jeita_enabled = of_property_read_bool(node,
 				"qcom,sw-jeita-enable");
 
-	chg->jeita_arb_enable = of_property_read_bool(node,
-				"qcom,jeita-arb-enable");
-
 	chg->pd_not_supported = chg->pd_not_supported ||
 			of_property_read_bool(node, "qcom,usb-pd-disable");
 
@@ -609,12 +606,6 @@ static int smb5_parse_dt_misc(struct smb5 *chip, struct device_node *node)
 					&chg->chg_param.hvdcp2_max_icl_ua);
 	if (chg->chg_param.hvdcp2_max_icl_ua <= 0)
 		chg->chg_param.hvdcp2_max_icl_ua = MICRO_3PA;
-
-	of_property_read_u32(node, "qcom,hvdcp2-12v-max-icl-ua",
-					&chg->chg_param.hvdcp2_12v_max_icl_ua);
-	if (chg->chg_param.hvdcp2_12v_max_icl_ua <= 0)
-		chg->chg_param.hvdcp2_12v_max_icl_ua =
-			chg->chg_param.hvdcp2_max_icl_ua;
 
 	/* Used only in Adapter CV mode of operation */
 	of_property_read_u32(node, "qcom,qc4-max-icl-ua",
