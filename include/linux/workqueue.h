@@ -19,6 +19,9 @@
 struct workqueue_struct;
 
 struct work_struct;
+#ifdef OPLUS_FEATURE_UIFIRST
+#include <linux/uifirst/uifirst_sched_workqueue.h>
+#endif
 typedef void (*work_func_t)(struct work_struct *work);
 void delayed_work_timer_fn(struct timer_list *t);
 
@@ -107,6 +110,9 @@ struct work_struct {
 #ifdef CONFIG_LOCKDEP
 	struct lockdep_map lockdep_map;
 #endif
+#ifdef OPLUS_FEATURE_UIFIRST
+	int ux_work;
+#endif
 	ANDROID_KABI_RESERVE(1);
 	ANDROID_KABI_RESERVE(2);
 };
@@ -145,6 +151,10 @@ struct workqueue_attrs {
 	 * @nice: nice level
 	 */
 	int nice;
+
+#ifdef VENDOR_EDIT
+	int static_ux;
+#endif
 
 	/**
 	 * @cpumask: allowed CPUs
@@ -218,7 +228,11 @@ static inline unsigned int work_static(struct work_struct *work)
 	return *work_data_bits(work) & WORK_STRUCT_STATIC;
 }
 #else
-static inline void __init_work(struct work_struct *work, int onstack) { }
+static inline void __init_work(struct work_struct *work, int onstack) {
+#ifdef OPLUS_FEATURE_UIFIRST
+	work->ux_work = 0;
+#endif
+}
 static inline void destroy_work_on_stack(struct work_struct *work) { }
 static inline void destroy_delayed_work_on_stack(struct delayed_work *work) { }
 static inline unsigned int work_static(struct work_struct *work) { return 0; }
@@ -345,7 +359,9 @@ enum {
 	 * http://thread.gmane.org/gmane.linux.kernel/1480396
 	 */
 	WQ_POWER_EFFICIENT	= 1 << 7,
-
+#ifdef VENDOR_EDIT
+    WQ_UX  = 1 << 15,
+#endif
 	__WQ_DRAINING		= 1 << 16, /* internal: workqueue is draining */
 	__WQ_ORDERED		= 1 << 17, /* internal: workqueue is ordered */
 	__WQ_LEGACY		= 1 << 18, /* internal: create*_workqueue() */

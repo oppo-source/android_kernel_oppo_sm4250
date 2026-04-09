@@ -176,6 +176,8 @@
 				##__VA_ARGS__); \
 	} while (0)
 
+#define IS_ASYNC_FASTRPC_AVAILABLE (0)
+
 static int fastrpc_pdr_notifier_cb(struct notifier_block *nb,
 					unsigned long code,
 					void *data);
@@ -417,6 +419,8 @@ struct fastrpc_mmap {
 	int uncached;
 	int secure;
 	uintptr_t attr;
+	bool is_filemap;
+	/* flag to indicate map used in process init */
 };
 
 enum fastrpc_perfkeys {
@@ -472,6 +476,9 @@ struct fastrpc_file {
 	struct mutex perf_mutex;
 	struct pm_qos_request pm_qos_req;
 	int qos_request;
+	#ifdef OPLUS_BUG_STABILITY
+	struct mutex pm_qos_mutex;
+	#endif /* OPLUS_BUG_STABILITY */
 	struct mutex map_mutex;
 	struct mutex internal_map_mutex;
 	/* Identifies the device (MINOR_NUM_DEV / MINOR_NUM_SECURE_DEV) */
@@ -482,6 +489,8 @@ struct fastrpc_file {
 	uint32_t ws_timeout;
 	/* To indicate attempt has been made to allocate memory for debug_buf */
 	int debug_buf_alloced_attempted;
+	/* Flag to indicate dynamic process creation status*/
+	bool in_process_create;
 };
 
 static struct fastrpc_apps gfa;
@@ -831,9 +840,10 @@ static int fastrpc_mmap_remove(struct fastrpc_file *fl, uintptr_t va,
 
 	spin_lock(&me->hlock);
 	hlist_for_each_entry_safe(map, n, &me->maps, hn) {
-		if (map->raddr == va &&
+		if (map->refs == 1 && map->raddr == va &&
 			map->raddr + map->len == va + len &&
-			map->refs == 1) {
+			/* Remove map if not used in process initialization*/
+			!map->is_filemap) {
 			match = map;
 			hlist_del_init(&map->hn);
 			break;
@@ -845,9 +855,10 @@ static int fastrpc_mmap_remove(struct fastrpc_file *fl, uintptr_t va,
 		return 0;
 	}
 	hlist_for_each_entry_safe(map, n, &fl->maps, hn) {
-		if (map->raddr == va &&
+		if (map->refs == 1 && map->raddr == va &&
 			map->raddr + map->len == va + len &&
-			map->refs == 1) {
+			/* Remove map if not used in process initialization*/
+			!map->is_filemap) {
 			match = map;
 			hlist_del_init(&map->hn);
 			break;
@@ -983,6 +994,7 @@ static int fastrpc_mmap_create(struct fastrpc_file *fl, int fd,
 	map->fl = fl;
 	map->fd = fd;
 	map->attr = attr;
+	map->is_filemap = false;
 	if (mflags == ADSP_MMAP_HEAP_ADDR ||
 				mflags == ADSP_MMAP_REMOTE_HEAP_ADDR) {
 		map->apps = me;
@@ -2522,6 +2534,13 @@ static int fastrpc_init_process(struct fastrpc_file *fl,
 		remote_arg_t ra[1];
 		int tgid = fl->tgid;
 
+		if (fl->dev_minor == MINOR_NUM_DEV) {
+			err = -ECONNREFUSED;
+			pr_err("adsprpc: %s: untrusted app trying to attach to privileged DSP PD\n",
+				__func__);
+			return err;
+		}
+
 		ra[0].buf.pv = (void *)&tgid;
 		ra[0].buf.len = sizeof(tgid);
 		ioctl.inv.handle = FASTRPC_STATIC_HANDLE_PROCESS_GROUP;
@@ -2560,6 +2579,16 @@ static int fastrpc_init_process(struct fastrpc_file *fl,
 			int siglen;
 		} inbuf;
 
+		spin_lock(&fl->hlock);
+		if (fl->in_process_create) {
+			err = -EALREADY;
+			pr_err("Already in create dynamic process\n");
+			spin_unlock(&fl->hlock);
+			return err;
+		}
+		fl->in_process_create = true;
+		spin_unlock(&fl->hlock);
+
 		inbuf.pgid = fl->tgid;
 		inbuf.namelen = strlen(current->comm) + 1;
 		inbuf.filelen = init->filelen;
@@ -2573,6 +2602,8 @@ static int fastrpc_init_process(struct fastrpc_file *fl,
 			mutex_lock(&fl->map_mutex);
 			VERIFY(err, !fastrpc_mmap_create(fl, init->filefd, 0,
 				init->file, init->filelen, mflags, &file));
+			if (file)
+				file->is_filemap = true;
 			mutex_unlock(&fl->map_mutex);
 			if (err)
 				goto bail;
@@ -2651,10 +2682,17 @@ static int fastrpc_init_process(struct fastrpc_file *fl,
 			unsigned int pageslen;
 		} inbuf;
 
+		if (fl->dev_minor == MINOR_NUM_DEV) {
+			err = -ECONNREFUSED;
+			pr_err("adsprpc: %s: untrusted app trying to attach to audio PD\n",
+				__func__);
+			return err;
+		}
+
 		if (!init->filelen)
 			goto bail;
 
-		proc_name = kzalloc(init->filelen, GFP_KERNEL);
+		proc_name = kzalloc(init->filelen + 1, GFP_KERNEL);
 		VERIFY(err, !IS_ERR_OR_NULL(proc_name));
 		if (err)
 			goto bail;
@@ -2767,6 +2805,13 @@ bail:
 		fastrpc_mmap_free(file, 0);
 		mutex_unlock(&fl->map_mutex);
 	}
+
+	if (init->flags == FASTRPC_INIT_CREATE) {
+		spin_lock(&fl->hlock);
+		fl->in_process_create = false;
+		spin_unlock(&fl->hlock);
+	}
+
 	return err;
 }
 
@@ -2879,36 +2924,62 @@ bail:
 }
 
 static int fastrpc_get_info_from_kernel(
-		struct fastrpc_ioctl_dsp_capabilities *dsp_cap,
+		struct fastrpc_ioctl_remote_dsp_capability *dsp_cap,
 		struct fastrpc_file *fl)
 {
 	int err = 0;
 	uint32_t domain_support;
 	uint32_t domain = dsp_cap->domain;
+	uint32_t async_capability = IS_ASYNC_FASTRPC_AVAILABLE;
+	struct fastrpc_dsp_capabilities *dsp_cap_ptr;
 
-	if (!gcinfo[domain].dsp_cap_kernel.is_cached) {
+	VERIFY(err, dsp_cap->domain < NUM_CHANNELS);
+
+	/*
+	 * Check if number of attribute IDs obtained from userspace
+	 * is less than the number of attribute IDs supported by
+	 * kernel
+	 */
+	if (dsp_cap->attribute_ID >= FASTRPC_MAX_DSP_ATTRIBUTES) {
+		err = EOVERFLOW;
+		dsp_cap->capability = 0;
+		goto bail;
+	}
+
+	dsp_cap_ptr = &gcinfo[domain].dsp_cap_kernel;
+
+	if (!dsp_cap_ptr->is_cached) {
 		/*
 		 * Information not on kernel, query device for information
 		 * and cache on kernel
 		 */
-		err = fastrpc_get_info_from_dsp(fl, dsp_cap->dsp_attributes,
-				FASTRPC_MAX_DSP_ATTRIBUTES - 1,
-				domain);
+		err = fastrpc_get_info_from_dsp(fl,
+			  dsp_cap_ptr->dsp_attributes,
+			  FASTRPC_MAX_DSP_ATTRIBUTES - 1,
+			  domain);
 		if (err)
 			goto bail;
 
-		domain_support = dsp_cap->dsp_attributes[0];
+		domain_support =
+			dsp_cap_ptr->dsp_attributes[0];
+
 		switch (domain_support) {
 		case 0:
-			memset(dsp_cap->dsp_attributes, 0,
-				sizeof(dsp_cap->dsp_attributes));
-			memset(&gcinfo[domain].dsp_cap_kernel.dsp_attributes,
-				0, sizeof(dsp_cap->dsp_attributes));
+			memset(&dsp_cap_ptr->dsp_attributes,
+				0,
+				sizeof(dsp_cap_ptr->dsp_attributes));
+			memset(&dsp_cap->capability,
+				0, sizeof(dsp_cap->capability));
 			break;
 		case 1:
-			memcpy(&gcinfo[domain].dsp_cap_kernel.dsp_attributes,
-				dsp_cap->dsp_attributes,
-				sizeof(dsp_cap->dsp_attributes));
+			async_capability =
+				async_capability &&
+				dsp_cap_ptr->dsp_attributes[ASYNC_FASTRPC_CAP];
+			dsp_cap_ptr->dsp_attributes[ASYNC_FASTRPC_CAP] =
+				async_capability;
+			memcpy(&dsp_cap->capability,
+			&dsp_cap_ptr->dsp_attributes[dsp_cap->attribute_ID],
+			sizeof(dsp_cap->capability));
 			break;
 		default:
 			err = -1;
@@ -2916,19 +2987,19 @@ static int fastrpc_get_info_from_kernel(
 			 * Reset is_cached flag to 0 so subsequent calls
 			 * can try to query dsp again
 			 */
-			gcinfo[domain].dsp_cap_kernel.is_cached = 0;
+			dsp_cap_ptr->is_cached = 0;
 			pr_warn("adsprpc: %s: %s: returned bad domain support value %d\n",
 					current->comm,
 					__func__,
 					domain_support);
 			goto bail;
 		}
-		gcinfo[domain].dsp_cap_kernel.is_cached = 1;
+		dsp_cap_ptr->is_cached = 1;
 	} else {
 		// Information on Kernel, pass it to user
-		memcpy(dsp_cap->dsp_attributes,
-			&gcinfo[domain].dsp_cap_kernel.dsp_attributes,
-			sizeof(dsp_cap->dsp_attributes));
+		memcpy(&dsp_cap->capability,
+			&dsp_cap_ptr->dsp_attributes[dsp_cap->attribute_ID],
+			sizeof(dsp_cap->capability));
 	}
 bail:
 	return err;
@@ -3305,13 +3376,15 @@ static int fastrpc_internal_munmap(struct fastrpc_file *fl,
 	mutex_unlock(&fl->map_mutex);
 	if (err)
 		goto bail;
-	VERIFY(err, !fastrpc_munmap_on_dsp(fl, map->raddr,
-				map->phys, map->size, map->flags));
-	if (err)
-		goto bail;
-	mutex_lock(&fl->map_mutex);
-	fastrpc_mmap_free(map, 0);
-	mutex_unlock(&fl->map_mutex);
+	if (map) {
+		VERIFY(err, !fastrpc_munmap_on_dsp(fl, map->raddr,
+					map->phys, map->size, map->flags));
+		if (err)
+			goto bail;
+		mutex_lock(&fl->map_mutex);
+		fastrpc_mmap_free(map, 0);
+		mutex_unlock(&fl->map_mutex);
+	}
 bail:
 	if (err && map) {
 		mutex_lock(&fl->map_mutex);
@@ -3681,6 +3754,7 @@ static int fastrpc_file_free(struct fastrpc_file *fl)
 	}
 	spin_lock(&fl->hlock);
 	fl->file_close = 1;
+	fl->in_process_create = false;
 	spin_unlock(&fl->hlock);
 	if (!IS_ERR_OR_NULL(fl->init_mem))
 		fastrpc_buf_free(fl->init_mem, 0);
@@ -3720,6 +3794,9 @@ static int fastrpc_file_free(struct fastrpc_file *fl)
 	mutex_destroy(&fl->perf_mutex);
 	mutex_destroy(&fl->map_mutex);
 	mutex_destroy(&fl->internal_map_mutex);
+	#ifdef OPLUS_BUG_STABILITY
+	mutex_destroy(&fl->pm_qos_mutex);
+	#endif /* OPLUS_BUG_STABILITY */
 	kfree(fl);
 	return 0;
 }
@@ -4073,6 +4150,7 @@ static int fastrpc_device_open(struct inode *inode, struct file *filp)
 	fl->cid = -1;
 	fl->dev_minor = dev_minor;
 	fl->init_mem = NULL;
+	fl->in_process_create = false;
 	memset(&fl->perf, 0, sizeof(fl->perf));
 	fl->qos_request = 0;
 	fl->dsp_proc_init = 0;
@@ -4083,6 +4161,9 @@ static int fastrpc_device_open(struct inode *inode, struct file *filp)
 	hlist_add_head(&fl->hn, &me->drivers);
 	spin_unlock(&me->hlock);
 	mutex_init(&fl->perf_mutex);
+	#ifdef OPLUS_BUG_STABILITY
+	mutex_init(&fl->pm_qos_mutex);
+	#endif /* OPLUS_BUG_STABILITY */
 	return 0;
 }
 
@@ -4090,11 +4171,14 @@ static int fastrpc_set_process_info(struct fastrpc_file *fl)
 {
 	int err = 0, buf_size = 0;
 	char strpid[PID_SIZE];
+	char cur_comm[TASK_COMM_LEN];
 
+	memcpy(cur_comm, current->comm, TASK_COMM_LEN);
+	cur_comm[TASK_COMM_LEN-1] = '\0';
 	fl->tgid = current->tgid;
 	snprintf(strpid, PID_SIZE, "%d", current->pid);
 	if (debugfs_root) {
-		buf_size = strlen(current->comm) + strlen("_")
+		buf_size = strlen(cur_comm) + strlen("_")
 			+ strlen(strpid) + 1;
 
 		spin_lock(&fl->hlock);
@@ -4109,13 +4193,13 @@ static int fastrpc_set_process_info(struct fastrpc_file *fl)
 			err = -ENOMEM;
 			return err;
 		}
-		snprintf(fl->debug_buf, UL_SIZE, "%.10s%s%d",
-			current->comm, "_", current->pid);
+		snprintf(fl->debug_buf, buf_size, "%.10s%s%d",
+			cur_comm, "_", current->pid);
 		fl->debugfs_file = debugfs_create_file(fl->debug_buf, 0644,
 			debugfs_root, fl, &debugfs_fops);
 		if (IS_ERR_OR_NULL(fl->debugfs_file)) {
 			pr_warn("Error: %s: %s: failed to create debugfs file %s\n",
-				current->comm, __func__, fl->debug_buf);
+				cur_comm, __func__, fl->debug_buf);
 			fl->debugfs_file = NULL;
 			kfree(fl->debug_buf);
 			fl->debug_buf_alloced_attempted = 0;
@@ -4204,12 +4288,18 @@ static int fastrpc_internal_control(struct fastrpc_file *fl,
 		fl->pm_qos_req.type = PM_QOS_REQ_AFFINE_CORES;
 		cpumask_copy(&fl->pm_qos_req.cpus_affine, &mask);
 
+		#ifdef OPLUS_BUG_STABILITY
+		mutex_lock(&fl->pm_qos_mutex);
+		#endif /* OPLUS_BUG_STABILITY */
 		if (!fl->qos_request) {
 			pm_qos_add_request(&fl->pm_qos_req,
 				PM_QOS_CPU_DMA_LATENCY, latency);
 			fl->qos_request = 1;
 		} else
 			pm_qos_update_request(&fl->pm_qos_req, latency);
+		#ifdef OPLUS_BUG_STABILITY
+		mutex_unlock(&fl->pm_qos_mutex);
+		#endif /* OPLUS_BUG_STABILITY */
 
 		/* Ensure CPU feature map updated to DSP for early WakeUp */
 		fastrpc_send_cpuinfo_to_dsp(fl);
@@ -4361,13 +4451,14 @@ bail:
 	return err;
 }
 
-static int fastrpc_get_dsp_info(struct fastrpc_ioctl_dsp_capabilities *dsp_cap,
-				void *param, struct fastrpc_file *fl)
+static int fastrpc_get_dsp_info(
+		struct fastrpc_ioctl_remote_dsp_capability *dsp_cap,
+		void *param, struct fastrpc_file *fl)
 {
 	int err = 0;
 
 	K_COPY_FROM_USER(err, 0, dsp_cap, param,
-			sizeof(struct fastrpc_ioctl_dsp_capabilities));
+			sizeof(struct fastrpc_ioctl_remote_dsp_capability));
 	VERIFY(err, dsp_cap->domain < NUM_CHANNELS);
 	if (err)
 		goto bail;
@@ -4375,8 +4466,13 @@ static int fastrpc_get_dsp_info(struct fastrpc_ioctl_dsp_capabilities *dsp_cap,
 	err = fastrpc_get_info_from_kernel(dsp_cap, fl);
 	if (err)
 		goto bail;
-	K_COPY_TO_USER(err, 0, param, dsp_cap,
-			sizeof(struct fastrpc_ioctl_dsp_capabilities));
+	K_COPY_TO_USER(
+			err,
+			0,
+			&((struct fastrpc_ioctl_remote_dsp_capability *)
+				param)->capability,
+			&dsp_cap->capability,
+			sizeof(dsp_cap->capability));
 bail:
 	return err;
 }
@@ -4394,7 +4490,7 @@ static long fastrpc_device_ioctl(struct file *file, unsigned int ioctl_num,
 		struct fastrpc_ioctl_init_attrs init;
 		struct fastrpc_ioctl_perf perf;
 		struct fastrpc_ioctl_control cp;
-		struct fastrpc_ioctl_dsp_capabilities dsp_cap;
+		struct fastrpc_ioctl_remote_dsp_capability dsp_cap;
 	} p;
 	union {
 		struct fastrpc_ioctl_mmap mmap;

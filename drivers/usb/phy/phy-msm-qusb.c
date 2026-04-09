@@ -505,6 +505,23 @@ static void qusb_phy_write_seq(void __iomem *base, u32 *seq, int cnt,
 	}
 }
 
+#ifdef OPLUS_FEATURE_CHG_BASIC
+/* huangtongfeng add for test usb eye  */
+static void qusb_phy_read_seq(void __iomem *base, u32 *seq, int cnt,
+		unsigned long delay)
+{
+	int i;
+
+	pr_err("Seq count:%d\n", cnt);
+	for (i = 0; i < cnt; i = i+2) {
+		//readl_relaxed(base + seq[i+1]);
+		pr_err("read 0x%02x to 0x%02x\n", seq[i+1], readl_relaxed(base + seq[i+1]));
+		if (delay)
+			usleep_range(delay, (delay + 2000));
+	}
+}
+#endif
+
 static int qusb_phy_init(struct usb_phy *phy)
 {
 	struct qusb_phy *qphy = container_of(phy, struct qusb_phy, phy);
@@ -660,7 +677,11 @@ static int qusb_phy_init(struct usb_phy *phy)
 
 	if (pll_lock_fail)
 		dev_err(phy->dev, "QUSB PHY PLL LOCK fails:%x\n", reg);
-
+#ifdef OPLUS_FEATURE_CHG_BASIC
+/* huangtongfeng add for test usb eye  */
+	qusb_phy_read_seq(qphy->base, qphy->qusb_phy_init_seq,
+				qphy->init_seq_len, 0);
+#endif
 	return 0;
 }
 

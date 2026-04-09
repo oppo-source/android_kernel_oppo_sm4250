@@ -26,6 +26,22 @@
 
 #include "walt.h"
 
+#if defined(OPLUS_FEATURE_IOMONITOR) && defined(CONFIG_IOMONITOR)
+#include <linux/iomonitor/iomonitor.h>
+#endif /*OPLUS_FEATURE_IOMONITOR*/
+#ifdef OPLUS_FEATURE_UIFIRST
+extern unsigned int walt_scale_demand_divisor;
+bool ux_task_misfit(struct task_struct *p, int cpu);
+#define scale_demand(d) ((d)/walt_scale_demand_divisor)
+#endif /* OPLUS_FEATURE_UIFIRST */
+#ifdef OPLUS_FEATURE_UIFIRST
+#include <linux/uifirst/uifirst_sched_common.h>
+#endif /* OPLUS_FEATURE_UIFIRST */
+#if defined(OPLUS_FEATURE_HEALTHINFO) && defined(CONFIG_OPPO_HEALTHINFO)
+// Add for get cpu load
+#include <soc/oppo/oppo_healthinfo.h>
+#endif /*OPLUS_FEATURE_HEALTHINFO*/
+
 #ifdef CONFIG_SMP
 static inline bool task_fits_max(struct task_struct *p, int cpu);
 #endif /* CONFIG_SMP */
@@ -875,6 +891,12 @@ static void update_tg_load_avg(struct cfs_rq *cfs_rq, int force)
 }
 #endif /* CONFIG_SMP */
 
+#ifdef OPLUS_FEATURE_HEALTHINFO
+#ifdef CONFIG_OPPO_JANK_INFO
+extern void  update_jank_trace_info(struct task_struct *tsk, int trace_type, unsigned int cpu, u64 delta);
+#endif
+#endif /* OPLUS_FEATURE_HEALTHINFO */
+
 /*
  * Update the current task's runtime statistics.
  */
@@ -908,6 +930,11 @@ static void update_curr(struct cfs_rq *cfs_rq)
 		trace_sched_stat_runtime(curtask, delta_exec, curr->vruntime);
 		cgroup_account_cputime(curtask, delta_exec);
 		account_group_exec_runtime(curtask, delta_exec);
+#ifdef OPLUS_FEATURE_HEALTHINFO
+#ifdef CONFIG_OPPO_JANK_INFO
+		update_jank_trace_info(curtask, JANK_TRACE_RUNNING, cpu_of(rq_of(cfs_rq)), delta_exec);
+#endif
+#endif /* OPLUS_FEATURE_HEALTHINFO */
 	}
 
 	account_cfs_rq_runtime(cfs_rq, delta_exec);
@@ -959,6 +986,15 @@ update_stats_wait_end(struct cfs_rq *cfs_rq, struct sched_entity *se)
 			return;
 		}
 		trace_sched_stat_wait(p, delta);
+#if defined (OPLUS_FEATURE_HEALTHINFO) && defined(CONFIG_OPPO_HEALTHINFO)
+// Add for get sched latency stat
+		ohm_schedstats_record(OHM_SCHED_SCHEDLATENCY, p, (delta >> 20));
+#endif /*OPLUS_FEATURE_HEALTHINFO*/
+#ifdef OPLUS_FEATURE_HEALTHINFO
+#ifdef CONFIG_OPPO_JANK_INFO
+		update_jank_trace_info(p, JANK_TRACE_RUNNABLE, 0, delta);
+#endif
+#endif /* OPLUS_FEATURE_HEALTHINFO */
 	}
 
 	__schedstat_set(se->statistics.wait_max,
@@ -998,6 +1034,11 @@ update_stats_enqueue_sleeper(struct cfs_rq *cfs_rq, struct sched_entity *se)
 		if (tsk) {
 			account_scheduler_latency(tsk, delta >> 10, 1);
 			trace_sched_stat_sleep(tsk, delta);
+#ifdef OPLUS_FEATURE_HEALTHINFO
+#ifdef CONFIG_OPPO_JANK_INFO
+			update_jank_trace_info(tsk, JANK_TRACE_SSTATE, 0, delta);
+#endif
+#endif /* OPLUS_FEATURE_HEALTHINFO */
 		}
 	}
 	if (block_start) {
@@ -1017,8 +1058,27 @@ update_stats_enqueue_sleeper(struct cfs_rq *cfs_rq, struct sched_entity *se)
 				__schedstat_add(se->statistics.iowait_sum, delta);
 				__schedstat_inc(se->statistics.iowait_count);
 				trace_sched_stat_iowait(tsk, delta);
-			}
 
+#if defined(OPLUS_FEATURE_IOMONITOR) && defined(CONFIG_IOMONITOR)
+				iomonitor_record_iowait(tsk, (delta >> 20));
+#endif /*OPLUS_FEATURE_IOMONITOR*/
+                       
+
+#if defined (OPLUS_FEATURE_HEALTHINFO) && defined(CONFIG_OPPO_HEALTHINFO)
+// Add for get iowait
+				ohm_schedstats_record(OHM_SCHED_IOWAIT, tsk, (delta >> 20));
+#endif /*OPLUS_FEATURE_HEALTHINFO*/
+			}
+#if defined(OPLUS_FEATURE_HEALTHINFO) && defined(CONFIG_OPPO_HEALTHINFO)
+			if(!tsk->in_iowait) {
+				 ohm_schedstats_record(OHM_SCHED_DSTATE, tsk, (delta >> 20));
+			}
+#endif /*OPLUS_FEATURE_HEALTHINFO*/
+#ifdef OPLUS_FEATURE_HEALTHINFO
+#ifdef CONFIG_OPPO_JANK_INFO
+			update_jank_trace_info(tsk, JANK_TRACE_DSTATE, 0, delta);
+#endif
+#endif /* OPLUS_FEATURE_HEALTHINFO */
 			trace_sched_stat_blocked(tsk, delta);
 			trace_sched_blocked_reason(tsk);
 
@@ -1038,7 +1098,7 @@ update_stats_enqueue_sleeper(struct cfs_rq *cfs_rq, struct sched_entity *se)
 }
 
 /*
- * Task is being enqueued - update stats:
+ * Task is being enqueued` - update stats:
  */
 static inline void
 update_stats_enqueue(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
@@ -4150,6 +4210,9 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 
 	/* ensure we never gain time by being placed backwards. */
 	se->vruntime = max_vruntime(se->vruntime, vruntime);
+#ifdef OPLUS_FEATURE_UIFIRST
+	place_entity_adjust_ux_task(cfs_rq, se, initial);
+#endif /* OPLUS_FEATURE_UIFIRST */
 }
 
 static void check_enqueue_throttle(struct cfs_rq *cfs_rq);
@@ -5530,6 +5593,11 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 
 		flags = ENQUEUE_WAKEUP;
 	}
+#ifdef OPLUS_FEATURE_UIFIRST
+	if (sysctl_uifirst_enabled) {
+		enqueue_ux_thread(rq, p);
+	}
+#endif /* OPLUS_FEATURE_UIFIRST */
 
 	for_each_sched_entity(se) {
 		cfs_rq = cfs_rq_of(se);
@@ -5634,6 +5702,11 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 		}
 		flags |= DEQUEUE_SLEEP;
 	}
+#ifdef OPLUS_FEATURE_UIFIRST
+	if (sysctl_uifirst_enabled) {
+		dequeue_ux_thread(rq, p);
+	}
+#endif /* OPLUS_FEATURE_UIFIRST */
 
 	for_each_sched_entity(se) {
 		cfs_rq = cfs_rq_of(se);
@@ -6888,6 +6961,14 @@ static int get_start_cpu(struct task_struct *p)
 			rd->max_cap_orig_cpu : rd->mid_cap_orig_cpu;
 	}
 
+#ifdef OPLUS_FEATURE_UIFIRST
+	if (sysctl_uifirst_enabled && sysctl_slide_boost_enabled && p->static_ux == 2 &&
+	(task_util(p) >= sysctl_boost_task_threshold ||
+	 scale_demand(p->ravg.sum) >= sysctl_boost_task_threshold)) {
+		start_cpu = rd->mid_cap_orig_cpu == -1 ?
+			rd->max_cap_orig_cpu : rd->mid_cap_orig_cpu;
+	}
+#endif
 	if (task_boost > TASK_BOOST_ON_MID) {
 		start_cpu = rd->max_cap_orig_cpu;
 		return start_cpu;
@@ -6997,6 +7078,21 @@ static void find_best_target(struct sched_domain *sd, cpumask_t *cpus,
 
 			if (!cpu_online(i) || cpu_isolated(i))
 				continue;
+
+#ifdef OPLUS_FEATURE_UIFIRST
+			if (sysctl_uifirst_enabled && test_task_ux(p)) {
+				if (sysctl_launcher_boost_enabled && is_heavy_ux_task(p) && !test_ux_task_cpu(i))
+					continue;
+
+				if (!sysctl_launcher_boost_enabled || !is_heavy_ux_task(p)) {
+					if (cpu_rq(i)->rt.rt_nr_running)
+						continue;
+
+					if (!list_empty(&cpu_rq(i)->ux_thread_list))
+						continue;
+				}
+			}
+#endif /* OPLUS_FEATURE_UIFIRST */
 
 			if (isolated_candidate == -1)
 				isolated_candidate = i;
@@ -7821,6 +7917,14 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 				}
 			}
 		}
+#ifdef OPLUS_FEATURE_UIFIRST
+	if (test_task_ux(p)
+#ifdef CONFIG_CAMERA_OPT
+		|| (sysctl_camera_opt_enabled && p->camera_opt)
+#endif
+		)
+		set_ux_task_cpu_common_by_prio(p, &best_energy_cpu, true, false);
+#endif
 		goto unlock;
 	}
 
@@ -7879,6 +7983,23 @@ unlock:
 	    ((prev_energy - best_energy) <= prev_energy >> 4))
 		best_energy_cpu = prev_cpu;
 
+#ifdef OPLUS_FEATURE_UIFIRST
+	if (sysctl_uifirst_enabled && sysctl_launcher_boost_enabled &&
+		is_heavy_ux_task(p) && !test_ux_prefer_cpu(p, best_energy_cpu)) {
+		find_ux_task_cpu(p, &best_energy_cpu);
+	}
+#endif /* OPLUS_FEATURE_UIFIRST */
+#ifdef OPLUS_FEATURE_UIFIRST
+	if (sysctl_uifirst_enabled && sysctl_slide_boost_enabled &&
+		p->static_ux == 2 && ux_task_misfit(p, best_energy_cpu)) {
+		find_ux_task_cpu(p, &best_energy_cpu);
+	}
+#ifdef CONFIG_CAMERA_OPT
+	else if (weight && sysctl_camera_opt_enabled && p->camera_opt && ux_task_misfit(p, cpu)) {
+		set_ux_task_cpu_common_by_prio(p, &best_energy_cpu, true, false);
+	}
+#endif
+#endif /* OPLUS_FEATURE_UIFIRST */
 done:
 
 	trace_sched_task_util(p, cpumask_bits(candidates)[0], best_energy_cpu,
@@ -8191,6 +8312,11 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	find_matching_se(&se, &pse);
 	update_curr(cfs_rq_of(se));
 	BUG_ON(!pse);
+#ifdef OPLUS_FEATURE_UIFIRST
+	if (sysctl_uifirst_enabled && test_task_ux(p) && !test_task_ux(curr)) {
+		goto preempt;
+	}
+#endif /* OPLUS_FEATURE_UIFIRST */
 	if (wakeup_preempt_entity(se, pse) == 1) {
 		/*
 		 * Bias pick_next to pick the sched entity that is
@@ -8281,6 +8407,11 @@ again:
 	} while (cfs_rq);
 
 	p = task_of(se);
+#ifdef OPLUS_FEATURE_UIFIRST
+	if (sysctl_uifirst_enabled) {
+		pick_ux_thread(rq, &p, &se);
+	}
+#endif /* OPLUS_FEATURE_UIFIRST */
 
 	/*
 	 * Since we haven't yet done put_prev_entity and if the selected task
@@ -8935,6 +9066,16 @@ redo:
 		if (!can_migrate_task(p, env))
 			goto next;
 
+#ifdef OPLUS_FEATURE_UIFIRST
+		if (sysctl_uifirst_enabled && test_task_ux(p)) {
+			if (sysctl_launcher_boost_enabled && is_heavy_ux_task(p) && test_ux_task_cpu(task_cpu(p)) &&
+					!test_ux_task_cpu(env->dst_cpu))
+				goto next;
+
+			if ((!sysctl_launcher_boost_enabled || is_heavy_ux_task(p)) && !list_empty(&env->dst_rq->ux_thread_list))
+				goto next;
+		}
+#endif /* OPLUS_FEATURE_UIFIRST */
 		/*
 		 * Depending of the number of CPUs and tasks and the
 		 * cgroup hierarchy, task_h_load() can return a null
@@ -12954,6 +13095,17 @@ static inline void walt_check_for_rotation(struct rq *rq)
 {
 }
 #endif
+#ifdef OPLUS_FEATURE_UIFIRST
+bool ux_task_misfit(struct task_struct *p, int cpu)
+{
+	int num_mincpu = cpumask_weight(topology_core_cpumask(0));
+	if ((scale_demand(p->ravg.sum) >= sysctl_boost_task_threshold ||
+	     task_util(p) >= sysctl_boost_task_threshold) && cpu < num_mincpu)
+		return true;
+
+	return false;
+}
+#endif
 
 static DEFINE_RAW_SPINLOCK(migration_lock);
 void check_for_migration(struct rq *rq, struct task_struct *p)
@@ -12963,7 +13115,16 @@ void check_for_migration(struct rq *rq, struct task_struct *p)
 	int prev_cpu = task_cpu(p);
 	int ret;
 
-	if (rq->misfit_task_load) {
+
+	if (rq->misfit_task_load
+#ifdef OPLUS_FEATURE_UIFIRST
+		|| (sysctl_uifirst_enabled && sysctl_slide_boost_enabled &&
+			p->static_ux == 2 && ux_task_misfit(p, prev_cpu))
+#ifdef CONFIG_CAMERA_OPT
+		|| (sysctl_camera_opt_enabled && p->camera_opt && ux_task_misfit(p, prev_cpu))
+#endif
+#endif
+		) {
 		if (rq->curr->state != TASK_RUNNING ||
 		    rq->curr->nr_cpus_allowed == 1)
 			return;

@@ -12,6 +12,10 @@
 #include <linux/mailbox_controller.h>
 #include <dt-bindings/soc/qcom,ipcc.h>
 
+#ifdef OPLUS_FEATURE_POWERINFO_STANDBY
+#include <soc/oplus/oplus_wakelock_profiler.h>
+#endif /* OPLUS_FEATURE_POWERINFO_STANDBY */
+
 /* IPCC Register offsets */
 #define IPCC_REG_SEND_ID		0x0C
 #define IPCC_REG_RECV_ID		0x10
@@ -43,7 +47,9 @@ struct ipcc_protocol_data {
 	struct device *dev;
 	int irq;
 };
-
+#ifdef OPLUS_FEATURE_POWERINFO_STANDBY
+extern atomic_t ipcc_first_msg;
+#endif
 /**
  * struct ipcc_mbox_chan - Per-mailbox-channel data. Associated to each channel
  *				requested by the clients
@@ -89,12 +95,19 @@ static irqreturn_t qcom_ipcc_irq_fn(int irq, void *data)
 			break;
 
 		virq = irq_find_mapping(proto_data->irq_domain, packed_id);
-
+#ifndef OPLUS_FEATURE_POWERINFO_STANDBY
 		dev_dbg(proto_data->dev,
 			"IRQ for client_id: %u; signal_id: %u; virq: %d\n",
 			qcom_ipcc_get_client_id(packed_id),
 			qcom_ipcc_get_signal_id(packed_id), virq);
-
+#else
+		if(atomic_read(&ipcc_first_msg) == 1){
+			pr_info("ipcc_first_msg IRQ for client_id: %u; signal_id: %u; virq: %d\n",
+				qcom_ipcc_get_client_id(packed_id),
+				qcom_ipcc_get_signal_id(packed_id), virq);
+				atomic_set(&ipcc_first_msg, 0);
+		}
+#endif //VENDOR_EDIT
 		writel_no_log(packed_id,
 				proto_data->base + IPCC_REG_RECV_SIGNAL_CLEAR);
 
@@ -334,6 +347,20 @@ static void msm_ipcc_resume(void)
 		name = desc->action->name;
 
 	pr_warn("%s: %d triggered %s\n", __func__, virq, name);
+
+	#ifdef OPLUS_FEATURE_POWERINFO_STANDBY
+	do {
+		int platform_id = get_cached_platform_id();
+		if (platform_id == KONA) {
+			wakeup_reasons_statics(IRQ_NAME_GLINK, WS_CNT_GLINK);
+			wakeup_reasons_statics(name, WS_CNT_WLAN|WS_CNT_ADSP|WS_CNT_CDSP|WS_CNT_SLPI);
+		} else if (platform_id == LITO) {
+			if (!strcmp(name, IRQ_NAME_MODEM_GLINK)) {
+				wakeup_reasons_statics(IRQ_NAME_MODEM_QMI, WS_CNT_MODEM);
+			}
+		}
+	} while(0);
+	#endif /* OPLUS_FEATURE_POWERINFO_STANDBY */
 }
 #else
 #define msm_ipcc_suspend NULL

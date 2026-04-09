@@ -22,11 +22,14 @@
 #if IS_ENABLED(CONFIG_NF_CONNTRACK)
 #include <net/netfilter/nf_conntrack.h>
 #endif
+// add by PengHao
+#include <linux/inetdevice.h>
 
+extern tee_use_src;
 static bool nf_dup_ipv4_route(struct net *net, struct sk_buff *skb,
 			      const struct in_addr *gw, int oif)
 {
-	const struct iphdr *iph = ip_hdr(skb);
+	struct iphdr *iph = ip_hdr(skb);
 	struct rtable *rt;
 	struct flowi4 fl4;
 
@@ -46,6 +49,8 @@ static bool nf_dup_ipv4_route(struct net *net, struct sk_buff *skb,
 	skb_dst_set(skb, &rt->dst);
 	skb->dev      = rt->dst.dev;
 	skb->protocol = htons(ETH_P_IP);
+	if (tee_use_src)
+		iph->saddr = inet_select_addr(skb->dev, 0, RT_SCOPE_UNIVERSE);
 
 	return true;
 }

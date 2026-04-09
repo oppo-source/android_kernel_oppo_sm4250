@@ -36,6 +36,10 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/trace_msm_pil_event.h>
 
+#ifdef OPLUS_FEATURE_SSR
+#include <soc/oplus/system/oplus_mm_kevent_fb.h>
+#endif /* OPLUS_FEATURE_SSR */
+
 #include "peripheral-loader.h"
 
 #define pil_err(desc, fmt, ...)						\
@@ -413,6 +417,26 @@ setup_fail:
 	return ret;
 }
 
+#ifdef OPLUS_FEATURE_SSR
+#define CAUSENAME_SIZE 128
+unsigned int BKDRHash(char* str, unsigned int len)
+{
+	unsigned int seed = 131; /* 31 131 1313 13131 131313 etc.. */
+	unsigned int hash = 0;
+	unsigned int i    = 0;
+
+	if (str == NULL) {
+		return 0;
+	}
+
+	for(i = 0; i < len; str++, i++) {
+		hash = (hash * seed) + (*str);
+	}
+
+	return hash;
+}
+#endif /*OPLUS_FEATURE_SSR*/
+
 /**
  * print_aux_minidump_tocs() - Print the ToC for an auxiliary minidump entry
  * @desc: PIL descriptor for the subsystem for which minidump is collected
@@ -440,6 +464,35 @@ static void print_aux_minidump_tocs(struct pil_desc *desc)
 	}
 }
 
+#ifdef OPLUS_FEATURE_SSR
+void __adsp_send_uevent(struct device *dev, char *reason)
+{
+	int ret_val;
+	char adsp_event[] = "ADSP_EVENT=adsp_crash";
+	char adsp_reason[300] = {0};
+	char *envp[3];
+
+	envp[0] = (char *)&adsp_event;
+	if(reason){
+		snprintf(adsp_reason, sizeof(adsp_reason),"ADSP_REASON=%s", reason);
+	}else{
+		snprintf(adsp_reason, sizeof(adsp_reason),"ADSP_REASON=unkown");
+	}
+	adsp_reason[299] = 0;
+	envp[1] = (char *)&adsp_reason;
+	envp[2] = 0;
+
+	if(dev){
+		ret_val = kobject_uevent_env(&(dev->kobj), KOBJ_CHANGE, envp);
+		if(!ret_val){
+			pr_info("adsp_crash:kobject_uevent_env success!\n");
+		}else{
+			pr_info("adsp_crash:kobject_uevent_env fail,error=%d!\n", ret_val);
+		}
+	}
+}
+#endif /*OPLUS_FEATURE_SSR*/
+
 /**
  * pil_do_ramdump() - Ramdump an image
  * @desc: descriptor from pil_desc_init()
@@ -456,7 +509,36 @@ int pil_do_ramdump(struct pil_desc *desc,
 	struct pil_seg *seg;
 	int count = 0, ret;
 
+#ifdef OPLUS_FEATURE_SSR
+	unsigned char payload[100] = "";
+	unsigned int hashid;
+	char strHashSource[CAUSENAME_SIZE];
+#endif /*OPLUS_FEATURE_SSR*/
+
 	if (desc->minidump_ss) {
+#ifdef OPLUS_FEATURE_MODEM_MINIDUMP
+	//Add for customized subsystem ramdump to skip generate dump cause by SAU
+	if (SKIP_GENERATE_RAMDUMP) {
+		pil_err(desc, "%s: Skip ramdump cuase by ap normal trigger.\n %s",
+			__func__, desc->name);
+		SKIP_GENERATE_RAMDUMP = false;
+		return -1;
+	}
+#endif
+
+#ifdef OPLUS_FEATURE_SSR
+	if(strlen(desc->name) > 0 && (strncmp(desc->name,"adsp",strlen(desc->name)) == 0)) {
+		strncpy(strHashSource,desc->name,strlen(desc->name));
+		hashid = BKDRHash(strHashSource,strlen(strHashSource));
+		scnprintf(payload, sizeof(payload), "payload@@%s$$fid@@%u", desc->name, hashid);
+		upload_mm_fb_kevent_to_atlas_limit(OPLUS_AUDIO_EVENTID_ADSP_CRASH, payload, OPLUS_FB_ADSP_CRASH_RATELIMIT);
+
+		if(desc->dev){
+			__adsp_send_uevent(desc->dev, payload);
+		}
+	}
+#endif /* OPLUS_FEATURE_SSR */
+
 		pr_debug("Minidump : md_ss_toc->md_ss_toc_init is 0x%x\n",
 			(unsigned int)desc->minidump_ss->md_ss_toc_init);
 		pr_debug("Minidump : md_ss_toc->md_ss_enable_status is 0x%x\n",
@@ -514,6 +596,8 @@ int pil_do_ramdump(struct pil_desc *desc,
 	if (ret)
 		pil_err(desc, "%s: Ramdump collection failed for subsys %s rc:%d\n",
 				__func__, desc->name, ret);
+
+
 
 	if (desc->subsys_vmid > 0)
 		ret = pil_assign_mem_to_subsys(desc, priv->region_start,

@@ -10562,6 +10562,13 @@ static int ufshcd_resume(struct ufs_hba *hba, enum ufs_pm_op pm_op)
 	ret = ufshcd_enable_clocks(hba);
 	if (ret)
 		goto disable_vreg;
+	/*
+	 * If scsi host is in recovery mode, force the link to STATE_OFF, so
+	 * that we do a full reset and restore instead of sending the SSU cmd,
+	 * as SSU cmd can be blocked by SCSI layer, see scsi_host_queue_ready().
+	 */
+	if (unlikely(scsi_host_in_recovery(hba->host)))
+		ufshcd_set_link_off(hba);
 
 	/* enable the host irq as host controller would be active soon */
 	ufshcd_enable_irq(hba);

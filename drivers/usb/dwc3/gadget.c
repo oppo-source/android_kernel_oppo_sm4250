@@ -811,8 +811,11 @@ static void dwc3_remove_requests(struct dwc3 *dwc, struct dwc3_ep *dep)
 
 	dbg_log_string("START for %s(%d)", dep->name, dep->number);
 	dwc3_stop_active_transfer(dwc, dep->number, true);
-
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	if (dep->number == 0) {
+#else
 	if (dep->number == 0 && dwc->ep0state != EP0_SETUP_PHASE) {
+#endif
 		unsigned int dir;
 
 		dbg_log_string("CTRLPEND(%d)", dwc->ep0state);
